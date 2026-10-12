@@ -11,6 +11,7 @@ const icons = { Activity, Plus, Server, RefreshCw, Settings2, X, Trash2, Play, P
 const STORAGE = 'server-board.servers.v1';
 const SETTINGS = 'server-board.settings.v1';
 const TOKENS = 'server-board.tokens.v1';
+const sshSessions = new Map();
 const app = document.querySelector('#app');
 const readJson = (store, key, fallback) => {
   try { return JSON.parse(store.getItem(key)) ?? fallback; } catch { return fallback; }
@@ -44,6 +45,32 @@ function normalizeEndpoint(input) {
   }
   return url.origin;
 }
+function normalizeGateway(input) {
+  const raw = input.trim() || 'http://127.0.0.1:8766';
+  return normalizeEndpoint(/^https?:\/\//i.test(raw) ? raw : `https://${raw}:8766`);
+}
+function normalizeHost(input) {
+  const host = input.trim();
+  if (!host || host.length > 253 || /[\s/\\:@?#]/.test(host)) throw new Error('请输入有效的 SSH 服务器 IP 或主机名');
+  return host;
+}
+async function gatewayRequest(endpoint, token, path, method = 'GET', body) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), method === 'POST' ? 30000 : 15000);
+  try {
+    const response = await fetch(`${endpoint}${path}`, {
+      method, headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined, cache: 'no-store', signal: controller.signal,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(response.status === 401 ? '网关令牌无效' : data.error || `网关返回 HTTP ${response.status}`);
+    return data;
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('网关连接超时');
+    if (error instanceof TypeError) throw new Error('无法连接网关，请检查地址、证书和网络');
+    throw error;
+  } finally { clearTimeout(timeout); }
+}
 function save() {
   localStorage.setItem(STORAGE, JSON.stringify(servers));
   localStorage.setItem(SETTINGS, JSON.stringify(settings));
@@ -57,7 +84,7 @@ function header() {
     <div class="brand"><span class="brand-mark">${icon('Activity', 21)}</span><span>SERVER<span class="brand-accent">BOARD</span><small>服务器监控工作台</small></span></div>
     <div class="nav-label">工作空间</div>
     <div class="nav-item active">${icon('ChartNoAxesCombined', 18)}<span>NPU 资源</span><span class="nav-active-mark"></span></div>
-    <div class="sidebar-bottom"><span class="side-orbit"></span><span>状态数据仅保留在采集端</span></div>
+    <div class="sidebar-bottom"><span class="side-orbit"></span><span>历史数据仅保留在采样服务内存</span></div>
   </aside>
   <main class="main">
     <div class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong>NPU 资源</strong></div><div class="top-right"><span class="today" id="clock"></span><a href="https://github.com/wushanchi/server_board" target="_blank" rel="noopener" title="查看项目仓库">${icon('ExternalLink', 16)}<span>GitHub</span></a></div></div>
@@ -119,8 +146,8 @@ function renderServer(item) {
   const stale = sample && Date.now() - Date.parse(sample.timestamp) > Math.max(90, response.interval_seconds * 3) * 1000;
   const state = error ? 'error' : stale ? 'warn' : sample ? 'online' : 'pending';
   const stateText = error ? '连接失败' : stale ? '数据延迟' : sample ? '运行中' : '等待采样';
-  return `<section class="server-section"><div class="section-head"><div class="section-heading"><span class="server-symbol">${icon('Server', 19)}</span><div><div class="server-title"><h2>${escapeHtml(server.name)}</h2><span class="status ${state}"><i></i>${stateText}</span></div><p>${escapeHtml(server.endpoint.replace(/^https?:\/\//, ''))}${sample ? ` <span>· 更新于 ${age(sample.timestamp)}</span>` : ''}</p></div></div><div class="section-tools">${button(icon('RefreshCw', 17), `refresh:${server.id}`, `class="icon-btn" title="刷新 ${escapeHtml(server.name)}" aria-label="刷新 ${escapeHtml(server.name)}"`)}${button(icon('Trash2', 17), `remove:${server.id}`, `class="icon-btn" title="移除 ${escapeHtml(server.name)}" aria-label="移除 ${escapeHtml(server.name)}"`)}</div></div>
-    ${error ? `<div class="error-line">${icon('CircleAlert', 17)}<span>${escapeHtml(error)}</span>${!tokens[server.id] ? button('设置令牌', `token:${server.id}`, 'class="text-button"') : ''}</div>` : ''}
+  return `<section class="server-section"><div class="section-head"><div class="section-heading"><span class="server-symbol">${icon('Server', 19)}</span><div><div class="server-title"><h2>${escapeHtml(server.name)}</h2><span class="status ${state}"><i></i>${stateText}</span></div><p>${escapeHtml(server.mode === 'ssh' ? `SSH ${server.host}:${server.port}` : server.endpoint.replace(/^https?:\/\//, ''))}${sample ? ` <span>· 更新于 ${age(sample.timestamp)}</span>` : ''}</p></div></div><div class="section-tools">${button(icon('RefreshCw', 17), `refresh:${server.id}`, `class="icon-btn" title="刷新 ${escapeHtml(server.name)}" aria-label="刷新 ${escapeHtml(server.name)}"`)}${button(icon('Trash2', 17), `remove:${server.id}`, `class="icon-btn" title="移除 ${escapeHtml(server.name)}" aria-label="移除 ${escapeHtml(server.name)}"`)}</div></div>
+    ${error ? `<div class="error-line">${icon('CircleAlert', 17)}<span>${escapeHtml(error)}</span>${server.mode === 'ssh' ? button('重新登录', `token:${server.id}`, 'class="text-button"') : !tokens[server.id] ? button('设置令牌', `token:${server.id}`, 'class="text-button"') : ''}</div>` : ''}
     ${devices.length ? `<div class="device-grid">${devices.map((d, i) => deviceCard(d, samples, i)).join('')}</div><div class="trend-head"><div><h3>算力占用趋势</h3><span>AI Core 使用率</span></div><span>${samples.length} 个采样点</span></div>${timeline(samples, devices)}` : !error ? '<div class="server-pending">等待采集端返回 NPU 数据</div>' : ''}
   </section>`;
 }
@@ -150,22 +177,70 @@ function renderDashboard() {
   const polls = [[15, '15 秒'], [30, '30 秒'], [60, '1 分钟'], [120, '2 分钟']];
   document.querySelector('#dashboard').innerHTML = `${demo ? `<div class="demo-banner">${icon('Info', 17)}<strong>演示模式</strong><span>当前显示模拟数据</span>${button('退出演示', 'demo-off', 'class="text-button"')}</div>` : ''}
     ${renderStats(items)}<div class="controls"><div class="control-group"><span class="control-label">时间范围</span><div class="segmented">${ranges.map(([v, label]) => button(label, `range:${v}`, `class="${settings.range === v ? 'selected' : ''}" aria-pressed="${settings.range === v}"`)).join('')}</div></div><div class="control-group right"><label class="control-label" for="poll">${icon('Clock3', 15)}页面刷新</label><select id="poll" aria-label="刷新间隔">${polls.map(([v, label]) => `<option value="${v}" ${settings.poll === v ? 'selected' : ''}>${label}</option>`).join('')}</select>${button(icon(paused ? 'Play' : 'Pause', 16), 'pause', `class="icon-btn pause-btn" title="${paused ? '继续自动刷新' : '暂停自动刷新'}" aria-label="${paused ? '继续自动刷新' : '暂停自动刷新'}"`)}</div></div>
-    ${items.length ? `<div class="servers">${items.map(renderServer).join('')}</div>` : `<div class="empty"><span class="empty-art">${icon('Server', 34)}</span><h2>尚未连接服务器</h2><p>添加采集端地址，开始查看 NPU 资源。</p><div>${button(`${icon('Plus', 17)}添加服务器`, 'open-add', 'class="btn primary"')}${button('查看演示', 'demo-on', 'class="btn secondary"')}</div></div>`}
-    <footer><span>SERVER BOARD</span><span>采集数据来自各服务器的只读接口</span></footer>`;
+    ${items.length ? `<div class="servers">${items.map(renderServer).join('')}</div>` : `<div class="empty"><span class="empty-art">${icon('Server', 34)}</span><h2>尚未连接服务器</h2><p>添加服务器，开始查看 NPU 资源。</p><div>${button(`${icon('Plus', 17)}添加服务器`, 'open-add', 'class="btn primary"')}${button('查看演示', 'demo-on', 'class="btn secondary"')}</div></div>`}
+    <footer><span>SERVER BOARD</span><span>历史数据仅保留在采样服务内存</span></footer>`;
   document.querySelector('#poll').addEventListener('change', event => { settings.poll = Number(event.target.value); save(); restartTimer(); renderDashboard(); });
   createIcons({ icons });
 }
-function renderModal(serverId = null) {
+function renderModal(serverId = null, requestedMode = null, probeResult = null, initial = {}) {
+  closeModal();
   const server = servers.find(x => x.id === serverId);
-  const isToken = Boolean(server);
+  const mode = requestedMode || server?.mode || 'agent';
+  const isToken = Boolean(server) && mode === 'agent';
+  const value = (key, fallback = '') => escapeHtml(initial[key] ?? server?.[key] ?? fallback);
+  const modes = !server ? `<div class="connection-modes">${button('HTTPS 采集端', 'mode:agent', `class="${mode === 'agent' ? 'current' : ''}" aria-pressed="${mode === 'agent'}"`)}${button('SSH 登录', 'mode:ssh', `class="${mode === 'ssh' ? 'current' : ''}" aria-pressed="${mode === 'ssh'}"`)}</div>` : '';
+  const sshFields = `<label for="server-name">显示名称</label><input id="server-name" name="name" value="${value('name')}" placeholder="例如：训练节点 A" maxlength="60" required />
+    <div class="field-row"><div><label for="ssh-host">服务器 IP / 主机名</label><input id="ssh-host" name="host" value="${value('host')}" placeholder="192.168.1.10" spellcheck="false" ${probeResult ? 'readonly' : ''} required /></div><div><label for="ssh-port">SSH 端口</label><input id="ssh-port" name="port" type="number" min="1" max="65535" value="${value('port', 22)}" ${probeResult ? 'readonly' : ''} required /></div></div>
+    <label for="ssh-username">SSH 用户名</label><input id="ssh-username" name="username" value="${value('username')}" autocomplete="username" required />
+    <label for="gateway-endpoint">SSH 网关地址</label><input id="gateway-endpoint" name="gateway" value="${value('gateway', 'http://127.0.0.1:8766')}" spellcheck="false" ${probeResult ? 'readonly' : ''} required />
+    <label for="gateway-token">网关访问令牌</label><input id="gateway-token" name="token" type="password" value="${escapeHtml(initial.token ?? tokens[serverId] ?? '')}" autocomplete="off" required />
+    <label for="sample-interval">采样间隔</label><select id="sample-interval" name="interval"><option value="15" ${value('interval', 30) === '15' ? 'selected' : ''}>15 秒</option><option value="30" ${value('interval', 30) === '30' ? 'selected' : ''}>30 秒</option><option value="60" ${value('interval', 30) === '60' ? 'selected' : ''}>60 秒</option><option value="120" ${value('interval', 30) === '120' ? 'selected' : ''}>120 秒</option></select>
+    ${probeResult ? `<div class="fingerprint"><span>服务器主机指纹 (${escapeHtml(probeResult.algorithm)})</span><code>${escapeHtml(probeResult.fingerprint)}</code></div><label class="confirm-fingerprint"><input type="checkbox" name="confirmed" required />我已核对并信任此服务器的主机指纹</label><label for="ssh-password">SSH 密码</label><input id="ssh-password" name="password" type="password" autocomplete="new-password" required /><small>密码只用于本次连接，不会保存到浏览器或仓库。</small>` : '<small>先读取并核对服务器主机指纹，再输入密码。</small>'}`;
+  const agentFields = `${!isToken ? `<label for="server-name">显示名称</label><input id="server-name" name="name" placeholder="例如：训练节点 A" maxlength="60" required /><label for="server-endpoint">服务器 IP 或 HTTPS 地址</label><input id="server-endpoint" name="endpoint" placeholder="192.168.1.10 或 https://npu.example.com" spellcheck="false" required /><small>直接输入 IP 时默认连接 HTTPS 8765 端口。</small>` : `<p class="token-server">${escapeHtml(server.name)}</p>`}<label for="server-token">访问令牌</label><input id="server-token" name="token" type="password" placeholder="采集端配置的令牌" autocomplete="off" required /><small>令牌仅保留在当前浏览器标签页。</small>`;
   modalOpen = true;
-  document.body.insertAdjacentHTML('beforeend', `<div class="modal-backdrop" id="modal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><div><span class="modal-eyebrow">SERVER CONNECTION</span><h2 id="modal-title">${isToken ? '更新访问令牌' : '添加服务器'}</h2></div>${button(icon('X', 19), 'close-modal', 'class="icon-btn" aria-label="关闭"')}</div><form id="server-form"><div class="modal-body">${!isToken ? `<div class="connection-modes"><span class="current">HTTPS 采集端</span><span class="future" title="需要部署 SSH 网关">SSH 登录 · 预留</span></div><label for="server-name">显示名称</label><input id="server-name" name="name" placeholder="例如：训练节点 A" maxlength="60" required /><label for="server-endpoint">服务器 IP 或 HTTPS 地址</label><input id="server-endpoint" name="endpoint" placeholder="192.168.1.10 或 https://npu.example.com" spellcheck="false" required /><small>直接输入 IP 时默认连接 HTTPS 8765 端口。</small>` : `<p class="token-server">${escapeHtml(server.name)}</p>`}<label for="server-token">访问令牌</label><input id="server-token" name="token" type="password" placeholder="采集端配置的令牌" autocomplete="off" required /><small>令牌仅保留在当前浏览器标签页。</small><div id="form-error" class="form-error" role="alert"></div></div><div class="modal-foot">${button('取消', 'close-modal', 'class="btn secondary"')}<button type="submit" class="btn primary">${isToken ? '保存令牌' : '连接服务器'}</button></div></form></div></div>`);
+  document.body.insertAdjacentHTML('beforeend', `<div class="modal-backdrop" id="modal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><div><span class="modal-eyebrow">SERVER CONNECTION</span><h2 id="modal-title">${server ? mode === 'ssh' ? '重新登录 SSH' : '更新访问令牌' : '添加服务器'}</h2></div>${button(icon('X', 19), 'close-modal', 'class="icon-btn" aria-label="关闭"')}</div><form id="server-form"><div class="modal-body">${modes}${mode === 'ssh' ? sshFields : agentFields}<div id="form-error" class="form-error" role="alert"></div></div><div class="modal-foot">${button('取消', 'close-modal', 'class="btn secondary"')}${mode === 'ssh' && !probeResult ? button('读取主机指纹', 'probe-ssh', 'class="btn primary"') : `<button type="submit" class="btn primary">${isToken ? '保存令牌' : mode === 'ssh' ? 'SSH 登录' : '连接服务器'}</button>`}</div></form></div></div>`);
   const form = document.querySelector('#server-form');
-  form.addEventListener('submit', event => {
+  const showError = error => { document.querySelector('#form-error').textContent = error.message; };
+  form.addEventListener('click', async event => {
+    if (event.target.closest('[data-action="probe-ssh"]') !== null) {
+      if (!form.reportValidity()) return;
+      const button = event.target.closest('button');
+      button.disabled = true;
+      try {
+        const data = new FormData(form);
+        const host = normalizeHost(String(data.get('host')));
+        const port = Number(data.get('port'));
+        const gateway = normalizeGateway(String(data.get('gateway')));
+        const token = String(data.get('token')).trim();
+        const result = await gatewayRequest(gateway, token, '/api/v1/ssh/probe', 'POST', { host, port });
+        renderModal(serverId, 'ssh', result, { name: data.get('name'), host, port, username: data.get('username'), gateway, token, interval: data.get('interval') });
+      } catch (error) { showError(error); button.disabled = false; }
+    }
+  });
+  form.addEventListener('submit', async event => {
     event.preventDefault();
+    const submit = form.querySelector('[type="submit"]');
+    submit.disabled = true;
     try {
       const data = new FormData(form);
-      if (isToken) tokens[server.id] = String(data.get('token')).trim();
+      if (mode === 'ssh') {
+        if (!probeResult || data.get('confirmed') !== 'on') throw new Error('请先确认服务器主机指纹');
+        const host = normalizeHost(String(data.get('host')));
+        const port = Number(data.get('port'));
+        const gateway = normalizeGateway(String(data.get('gateway')));
+        const token = String(data.get('token')).trim();
+        if (servers.some(s => s.id !== serverId && s.mode === 'ssh' && s.host === host && s.port === port && s.gateway === gateway)) throw new Error('这台 SSH 服务器已经添加');
+        const response = await gatewayRequest(gateway, token, '/api/v1/ssh/sessions', 'POST', {
+          host, port, username: String(data.get('username')).trim(), password: String(data.get('password')),
+          fingerprint: probeResult.fingerprint, interval_seconds: Number(data.get('interval')),
+        });
+        const id = serverId || crypto.randomUUID();
+        if (serverId && sshSessions.has(id)) closeSSHSession(server);
+        const config = { id, mode: 'ssh', name: String(data.get('name')).trim(), host, port, username: String(data.get('username')).trim(), gateway, interval: Number(data.get('interval')) };
+        if (server) Object.assign(server, config); else servers.push(config);
+        tokens[id] = token;
+        sshSessions.set(id, response.session_id);
+      } else if (isToken) tokens[server.id] = String(data.get('token')).trim();
       else {
         const endpoint = normalizeEndpoint(String(data.get('endpoint')));
         if (servers.some(s => s.endpoint === endpoint)) throw new Error('这台服务器已经添加');
@@ -174,25 +249,39 @@ function renderModal(serverId = null) {
         tokens[id] = String(data.get('token')).trim();
       }
       save(); closeModal(); renderDashboard(); refreshAll();
-    } catch (error) { document.querySelector('#form-error').textContent = error.message; }
+    } catch (error) { showError(error); submit.disabled = false; }
   });
-  document.querySelector('#modal input').focus();
+  form.querySelector('input')?.focus();
   createIcons({ icons });
 }
 function closeModal() { document.querySelector('#modal')?.remove(); modalOpen = false; }
+function closeSSHSession(server) {
+  const sessionId = sshSessions.get(server.id);
+  sshSessions.delete(server.id);
+  if (sessionId && tokens[server.id]) gatewayRequest(server.gateway, tokens[server.id], `/api/v1/ssh/sessions/${sessionId}`, 'DELETE').catch(() => {});
+}
 async function refreshServer(server) {
   const token = tokens[server.id];
+  if (server.mode === 'ssh' && !sshSessions.has(server.id)) {
+    results.set(server.id, { error: 'SSH 会话未连接，请重新登录。' }); return;
+  }
   if (!token) { results.set(server.id, { error: '访问令牌未设置，请重新填写。' }); return; }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const response = await fetch(`${server.endpoint}/api/v1/history?minutes=${settings.range}`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: controller.signal });
-    if (response.status === 401) throw new Error('访问令牌无效');
-    if (!response.ok) throw new Error(`接口返回 HTTP ${response.status}`);
-    const data = await response.json();
+    let data;
+    if (server.mode === 'ssh') {
+      data = await gatewayRequest(server.gateway, token, `/api/v1/ssh/sessions/${sshSessions.get(server.id)}/history?minutes=${settings.range}`);
+    } else {
+      const response = await fetch(`${server.endpoint}/api/v1/history?minutes=${settings.range}`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: controller.signal });
+      if (response.status === 401) throw new Error('访问令牌无效');
+      if (!response.ok) throw new Error(`接口返回 HTTP ${response.status}`);
+      data = await response.json();
+    }
     if (!Array.isArray(data.samples)) throw new Error('采集端返回了无效数据');
     results.set(server.id, { response: data, error: data.last_error ? `采集失败：${data.last_error}` : null });
   } catch (error) {
+    if (server.mode === 'ssh' && error.message.includes('reconnect required')) sshSessions.delete(server.id);
     results.set(server.id, { ...results.get(server.id), error: error.name === 'AbortError' ? '连接超时，请检查地址和网络' : error instanceof TypeError ? '无法连接。请检查 HTTPS 证书、CORS 和服务器网络。' : error.message });
   } finally { clearTimeout(timeout); }
 }
@@ -216,11 +305,15 @@ function handleAction(action) {
   else if (action.startsWith('range:')) { settings.range = Number(action.split(':')[1]); save(); renderDashboard(); if (!demo) refreshAll(); }
   else if (action.startsWith('refresh:')) { const server = servers.find(s => s.id === action.slice(8)); if (server) refreshServer(server).then(renderDashboard); }
   else if (action.startsWith('token:')) renderModal(action.slice(6));
-  else if (action.startsWith('remove:')) { const id = action.slice(7); servers = servers.filter(s => s.id !== id); delete tokens[id]; results.delete(id); save(); renderDashboard(); }
+  else if (action.startsWith('mode:')) renderModal(null, action.slice(5));
+  else if (action.startsWith('remove:')) { const id = action.slice(7); const server = servers.find(s => s.id === id); if (server?.mode === 'ssh') closeSSHSession(server); servers = servers.filter(s => s.id !== id); delete tokens[id]; results.delete(id); save(); renderDashboard(); }
 }
 app.innerHTML = header();
-app.addEventListener('click', event => { const target = event.target.closest('[data-action]'); if (target) handleAction(target.dataset.action); });
-document.addEventListener('click', event => { if (modalOpen && event.target.id === 'modal') closeModal(); });
+document.addEventListener('click', event => {
+  if (modalOpen && event.target.id === 'modal') closeModal();
+  const target = event.target.closest('[data-action]');
+  if (target && target.dataset.action !== 'probe-ssh') handleAction(target.dataset.action);
+});
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && modalOpen) closeModal(); });
 setInterval(() => { const clock = document.querySelector('#clock'); if (clock) clock.textContent = new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit', minute: '2-digit' }); }, 1000);
 renderDashboard();

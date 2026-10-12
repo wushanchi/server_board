@@ -1,28 +1,44 @@
 # Server Board
 
-面向多台 Ascend 服务器的 NPU 资源面板。网页可在 [wushanchi.github.io/server_board/](https://wushanchi.github.io/server_board/) 打开；采集端在每台服务器上定时运行 `npu-smi info`，通过只读 HTTPS 接口提供最近的历史数据。
+面向多台 Ascend 服务器的 NPU 资源面板。网页位于 [wushanchi.github.io/server_board/](https://wushanchi.github.io/server_board/)。可使用服务器上的 HTTPS 采集端，或在浏览器所在电脑启动 SSH 网关，通过服务器 IP、用户名和密码连接。
 
 ## 功能
 
 - 同屏展示多台服务器及其 NPU 设备、AI Core 占用率、HBM、温度、功耗和健康状态。
 - 时间窗口可选 15 分钟、30 分钟、1 小时、6 小时、24 小时；网页刷新周期可选 15、30、60、120 秒，默认 30 秒。
-- 采集端默认每 30 秒采样一次，内存中保留 24 小时；`SB_INTERVAL` 和 `SB_RETENTION_MINUTES` 可调整。
-- 服务地址和显示名称保存在浏览器本地；访问令牌仅保存在当前标签页的 `sessionStorage`。服务器数据不会上传到 GitHub。
+- 采集端和 SSH 网关默认每 30 秒采样一次；SSH 登录时可选 15、30、60、120 秒。历史数据在进程内存中保留最多 24 小时。
+- 服务地址、显示名称与 SSH 用户名保存在浏览器本地；访问令牌仅保存在当前标签页的 `sessionStorage`。SSH 密码不会保存；刷新网页后需重新登录 SSH。服务器数据不会上传到 GitHub。
 - “查看演示”仅显示明确标注的模拟数据，不代表真实 NPU 状态。
-- 已预留 SSH 登录接入位置。后续可通过受控网关使用 IP、用户名和密码连接；当前版本不会在纯静态网页中收集或保存 SSH 密码。
+- SSH 登录先读取主机公钥指纹，经用户核对确认后才发送密码；建立会话时网关再次比对指纹。
 
 ## 架构与前提
 
-GitHub Pages 只托管静态网页，浏览器不能直接 SSH 到服务器。每台 NPU 服务器需要运行 `agent/server_board_agent.py`，并提供浏览器可访问、证书受信任的 HTTPS 地址。网页输入 IP 时默认连接 `https://IP:8765`；也可输入完整的 HTTPS 地址。浏览器和服务器之间必须网络可达。访问内网 IP 时，浏览器可能会请求本地网络访问权限。
+GitHub Pages 只托管静态网页，浏览器不能直接 SSH 到服务器。SSH 方式需要在可访问目标服务器的电脑上运行 `agent/ssh_gateway.py`；这台电脑也须能被浏览器访问。网关默认只监听 `127.0.0.1:8766`，适合在当前浏览器所在电脑启动。浏览器可能请求本地网络访问权限。HTTPS 采集端方式仍可用：每台 NPU 服务器运行 `agent/server_board_agent.py`，并提供浏览器可访问且证书受信任的 HTTPS 地址。
 
 ```text
 浏览器 / GitHub Pages
        │ HTTPS + Bearer token
        ├── NPU server A: agent -> npu-smi info -> 24h in-memory history
-       └── NPU server B: agent -> npu-smi info -> 24h in-memory history
+       └── SSH gateway -> SSH to server B/C -> npu-smi info -> 24h in-memory history
 ```
 
-### 1. 启动采集端
+### 1. 启动 SSH 网关
+
+在浏览器所在电脑安装 Python 3.9+ 及依赖，并生成随机网关令牌。Windows PowerShell 示例：
+
+```powershell
+python -m pip install -r agent/requirements.txt
+$env:SB_GATEWAY_TOKEN = -join ((1..48) | ForEach-Object { 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[(Get-Random -Maximum 62)] })
+$env:SB_GATEWAY_HOST = '127.0.0.1'
+$env:SB_GATEWAY_PORT = '8766'
+python agent/ssh_gateway.py
+```
+
+将网关令牌保存在自己的密码管理器中。打开网页，点击“添加服务器”并选择“SSH 登录”，填写服务器 IP、SSH 端口、用户名、网关地址及令牌；先读取并核对服务器指纹，再输入 SSH 密码。服务器需要允许密码认证，且登录账号能执行 `npu-smi info`。网关只执行该固定命令，不提供任意命令执行接口。网关令牌可被持有者用来连接它能访问的 SSH 目标，请勿公开。
+
+网关在内存中保持已认证 SSH 会话与采样历史；移除服务器会关闭会话，无访问活动一小时后也会自动关闭。网关进程重启会清空历史和会话。多个浏览器标签页各自需要登录。不要把网关令牌或 SSH 密码写入仓库。远程部署网关时，必须提供可信 HTTPS 证书并设置 `SB_GATEWAY_HOST`、`SB_GATEWAY_TLS_CERT`、`SB_GATEWAY_TLS_KEY`；非本机监听不允许明文 HTTP。可通过 `SB_ALLOWED_ORIGINS` 指定允许访问网关的网页来源，默认包含正式站点和本地开发地址。
+
+### 2. 启动 HTTPS 采集端（可选）
 
 采集端仅依赖 Python 3.9+ 标准库和服务器上的 `npu-smi`。先在服务器验证 `npu-smi info` 有可解析的设备表。为每台服务器生成不同的高强度令牌，在服务环境中设置：
 
@@ -50,9 +66,9 @@ npu-a.example.com {
 
 注意：令牌通过 HTTPS 发送到**你填写的服务器地址**。只填写自己控制的采集端地址。采集端限制 `Origin`，并使用常量时间比较校验令牌；它不会在 HTTP 响应中返回令牌。
 
-### 2. 网页连接
+### 3. 网页连接
 
-打开网页，点击“添加服务器”，填写名称、服务器 IP 或 HTTPS 根地址以及对应令牌。一个浏览器标签页可添加多台服务器。刷新或重新打开标签页后，服务列表保留；新标签页需要重新输入令牌。移除服务器会删除本地保存的地址和该标签页的令牌。
+打开网页，点击“添加服务器”，选择 HTTPS 采集端或 SSH 登录。一个浏览器标签页可添加多台服务器。刷新或重新打开标签页后，服务列表保留；新标签页需要重新输入令牌，SSH 服务器还需要重新登录。移除服务器会删除本地保存的地址和该标签页的令牌。
 
 若出现连接错误，依次检查浏览器到采集端的网络、TLS 证书、`SB_ALLOWED_ORIGINS`、令牌，以及服务器上 `npu-smi info` 的输出。页面会把采集失败与网络失败分开显示。采集端进程重启后，内存历史会重新开始积累。
 
@@ -62,6 +78,7 @@ npu-a.example.com {
 npm install
 npm run dev
 npm run build
+python -m pip install -r agent/requirements.txt
 python3 -m unittest discover -s agent -p 'test_*.py'
 ```
 
@@ -69,7 +86,7 @@ python3 -m unittest discover -s agent -p 'test_*.py'
 
 ## 部署
 
-源码和 Pages 发布文件均在 [`wushanchi/server_board`](https://github.com/wushanchi/server_board)。运行 `npm run build` 后，`docs/` 是可部署的静态站点；GitHub Pages 从 `main` 的 `/docs` 发布，访问路径为 `/server_board/`。账号根站点 `wushanchi.github.io` 仅跳转到此路径。
+源码位于 [`wushanchi/server_board`](https://github.com/wushanchi/server_board)。运行 `npm run build` 后，将 `dist/` 中的文件放入 [`wushanchi/wushanchi.github.io`](https://github.com/wushanchi/wushanchi.github.io) 仓库的 `server_board/` 文件夹，由该仓库根目录的 Pages 站点发布。Vite 资源基础路径为 `/server_board/`。`server_board` 仓库自身的 Pages 已停用，避免与根站点争用相同路径。
 
 ## 数据接口
 

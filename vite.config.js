@@ -2,5 +2,5 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   base: '/server_board/',
-  build: { outDir: 'docs' },
+  build: { outDir: 'dist' },
 });
