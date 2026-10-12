@@ -1,6 +1,6 @@
 # Server Board
 
-面向多台 Ascend 服务器的 NPU 资源面板。网页可在 [wushanchi.github.io](https://wushanchi.github.io/) 打开；采集端在每台服务器上定时运行 `npu-smi info`，通过只读 HTTPS 接口提供最近的历史数据。
+面向多台 Ascend 服务器的 NPU 资源面板。网页可在 [wushanchi.github.io/server_board/](https://wushanchi.github.io/server_board/) 打开；采集端在每台服务器上定时运行 `npu-smi info`，通过只读 HTTPS 接口提供最近的历史数据。
 
 ## 功能
 
@@ -65,11 +65,11 @@ npm run build
 python3 -m unittest discover -s agent -p 'test_*.py'
 ```
 
-网页默认位于 `http://127.0.0.1:5173/`。本地调试时可用仅监听 loopback 的 HTTP 采集端，网页允许 `http://127.0.0.1:8765`。若 Vite 改用其他端口，需同步调整 `SB_ALLOWED_ORIGINS`。
+网页默认位于 `http://127.0.0.1:5173/server_board/`。本地调试时可用仅监听 loopback 的 HTTP 采集端，网页允许 `http://127.0.0.1:8765`。若 Vite 改用其他端口，需同步调整 `SB_ALLOWED_ORIGINS`。
 
 ## 部署
 
-源码仓库为 [`wushanchi/server_board`](https://github.com/wushanchi/server_board)。运行 `npm run build` 后，`dist/` 是可部署的静态站点。账号根站点仓库 `wushanchi/wushanchi.github.io` 提供 Pages 入口。修改前端后，需重新构建并把 `dist/` 的内容同步到该根站点仓库，再发布 Pages；采集端代码始终以本仓库为准。
+源码和 Pages 发布文件均在 [`wushanchi/server_board`](https://github.com/wushanchi/server_board)。运行 `npm run build` 后，`docs/` 是可部署的静态站点；GitHub Pages 从 `main` 的 `/docs` 发布，访问路径为 `/server_board/`。账号根站点 `wushanchi.github.io` 仅跳转到此路径。
 
 ## 数据接口
 
