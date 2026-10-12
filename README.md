@@ -36,6 +36,8 @@ export SB_ALLOWED_ORIGINS=https://wushanchi.github.io
 python3 agent/server_board_agent.py
 ```
 
+把生成的 `SB_TOKEN` 存入自己的密码管理器，之后在网页添加服务器时填写同一令牌。不要把令牌写入代码、提交记录或公开日志。
+
 生产环境建议让采集端只监听 `127.0.0.1`，由已有反向代理终止 HTTPS，并限制可访问来源。例如 Caddy：
 
 ```caddyfile
