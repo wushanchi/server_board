@@ -4,3 +4,37 @@
 .connection-modes{display:flex;background:#eef3f2;border-radius:5px;padding:3px;margin-bottom:20px;font-size:11px;font-weight:800}.connection-modes button{width:50%;border:0;background:transparent;color:#829b9a;text-align:center;padding:8px 3px;border-radius:3px}.connection-modes button.current{background:#fff;color:#147d74;box-shadow:0 1px 4px #183f3b17}
 .modal-body small+label{margin-top:18px}
 .modal{max-height:calc(100vh - 32px);display:flex;flex-direction:column}.modal form{min-height:0;display:flex;flex-direction:column}.modal-body{overflow:auto;min-height:0;padding-bottom:18px}.modal-body select{height:39px;border:1px solid #dbe6e5;border-radius:5px;padding:0 11px;background:#fff;color:#233f43;font-size:12px}.modal-body select+label,.modal-body input+label,.modal-body .field-row+label{margin-top:16px}.field-row{display:grid;grid-template-columns:minmax(0,1fr) 95px;gap:10px}.field-row>div{display:flex;flex-direction:column;min-width:0}.field-row input{width:100%}.fingerprint{margin-top:18px;padding:11px;background:#eef6f4;border:1px solid #d1e5e0;border-radius:5px;display:flex;flex-direction:column;gap:6px;color:#456c68;font-size:11px}.fingerprint code{font-size:11px;overflow-wrap:anywhere;color:#193f3c}.modal-body .confirm-fingerprint{display:flex;align-items:flex-start;gap:8px;margin-top:13px;font-weight:600;line-height:1.5}.confirm-fingerprint input{height:15px;width:15px;flex:none;margin:1px 0 0}.modal-body .confirm-fingerprint+label{margin-top:16px}
+/* Dashboard density: keep four server views visible on a desktop canvas. */
+.servers{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px;align-items:start}
+.server-section{padding:16px 15px 15px}
+.section-head{margin-bottom:15px}
+.server-title{gap:7px;flex-wrap:wrap}
+.server-title h2{font-size:13px}
+.device-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.device-card{padding:11px 10px 10px}
+.device-model{margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.device-main{display:block}
+.device-value{font-size:22px}
+.trend-head{display:block;margin-top:17px;margin-bottom:9px}
+.trend-head>div:first-child{margin-bottom:8px}
+.trend-tools{display:flex;align-items:center;justify-content:space-between;gap:6px;color:#9caaaa;font-size:9px}
+.chart-controls{display:flex;gap:3px;flex-wrap:wrap}
+.chart-metric{border:1px solid #dce8e6;background:#f7faf9;color:#6d8786;border-radius:4px;padding:4px 6px;font-size:9px;font-weight:800}
+.chart-metric.selected{background:#e1f3ef;border-color:#9bd4ca;color:#117b72}
+.chart-times{gap:2px}
+.time-tick{flex:1;text-align:center;white-space:nowrap}
+.time-tick:first-child{text-align:left}
+.time-tick:last-child{text-align:right}
+.server-summaries{margin-top:14px}
+.server-summaries-title{color:#557375;font-size:11px;font-weight:800;margin:0 0 8px 1px}
+.server-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.server-summary{background:#fff;border:1px solid #e3eaea;border-radius:6px;padding:11px 13px}
+.server-summary-head,.server-summary-value{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.server-summary-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#315456;font-size:11px}
+.server-summary-head span,.server-summary-value span{color:#91a3a3;font-size:9px;white-space:nowrap}
+.server-summary-value{margin-top:9px;align-items:baseline}
+.server-summary-value b{color:#1f7770;font:800 20px/1 DM Sans,Manrope,sans-serif}
+.summary-bar{height:4px;background:#edf2f1;border-radius:5px;overflow:hidden;margin-top:9px}
+.summary-bar span{display:block;height:100%;border-radius:inherit;background:#2a9b8d}
+@media(max-width:1050px){.servers{grid-template-columns:repeat(2,minmax(0,1fr))}.server-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){.servers{grid-template-columns:1fr}.server-summary-grid{grid-template-columns:1fr}.server-section{padding:16px 13px}.trend-tools{align-items:flex-start;flex-direction:column}.chart-controls{width:100%}.chart-metric{flex:1}}

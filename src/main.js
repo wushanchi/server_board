@@ -24,6 +24,8 @@ let paused = false;
 let loading = false;
 let timer;
 let modalOpen = false;
+let localGateway = null;
+const demoCharts = new Map();
 const results = new Map();
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c =>
@@ -32,6 +34,13 @@ const icon = (name, size = 18) => `<i data-lucide="${name.replace(/([a-z0-9])([A
 const num = (value, digits = 0) => Number.isFinite(value) ? Number(value).toFixed(digits) : '--';
 const pct = value => Number.isFinite(value) ? `${Math.round(value)}%` : '--';
 const formatTime = ts => new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const chartMetrics = {
+  hbm: { label: 'HBM', unit: '%', value: d => d.hbm_total_mb > 0 ? d.hbm_used_mb / d.hbm_total_mb * 100 : null, max: 100 },
+  ai: { label: 'AI Core', unit: '%', value: d => d.utilization, max: 100 },
+  temperature: { label: '温度', unit: '°C', value: d => d.temperature_c },
+  power: { label: '功耗', unit: 'W', value: d => d.power_w },
+};
+const seriesColors = ['#168c80', '#da7555', '#467fbc', '#b78a31', '#8a70b2', '#468e9c', '#b65f7a', '#6d9467'];
 const age = ts => {
   const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(ts)) / 1000));
   return seconds < 60 ? `${seconds} 秒前` : `${Math.floor(seconds / 60)} 分钟前`;
@@ -107,52 +116,73 @@ function renderStats(items) {
   ];
   return `<div class="stats">${stats.map(([label, value, detail, symbol, tone]) => `<div class="stat"><div class="stat-top"><span>${label}</span><span class="stat-icon ${tone}">${icon(symbol, 19)}</span></div><strong>${value}</strong><small>${detail}</small></div>`).join('')}</div>`;
 }
-function points(samples, deviceId) {
-  return samples.map(s => ({ t: Date.parse(s.timestamp), y: s.devices.find(d => d.id === deviceId)?.utilization })).filter(p => Number.isFinite(p.t) && Number.isFinite(p.y));
+function points(samples, deviceId, metric = 'hbm') {
+  const definition = chartMetrics[metric] || chartMetrics.hbm;
+  return samples.map(s => {
+    const device = s.devices.find(d => d.id === deviceId);
+    return { t: Date.parse(s.timestamp), y: device ? definition.value(device) : null };
+  }).filter(p => Number.isFinite(p.t) && Number.isFinite(p.y));
 }
-function sparkline(data, color) {
-  if (data.length < 2) return '<div class="spark-empty">暂无趋势</div>';
-  const min = data[0].t, span = Math.max(1, data.at(-1).t - min);
-  const path = data.map((p, i) => `${i ? 'L' : 'M'}${(p.t - min) / span * 120},${34 - p.y / 100 * 30}`).join(' ');
-  return `<svg class="spark" viewBox="0 0 120 38" preserveAspectRatio="none" aria-label="算力使用趋势"><path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-}
-function timeline(samples, devices) {
-  const all = devices.map((d, i) => ({ id: d.id, color: ['#159788', '#dd714f', '#4384c5', '#d0a044', '#876ab1', '#56a2a6'][i % 6], data: points(samples, d.id) }));
+function timeline(samples, devices, metric = 'hbm') {
+  const definition = chartMetrics[metric] || chartMetrics.hbm;
+  const all = devices.map((d, i) => ({ id: d.id, color: seriesColors[i % seriesColors.length], data: points(samples, d.id, metric) }));
   const valid = all.flatMap(x => x.data);
   if (valid.length < 2) return '<div class="timeline-empty">等待更多采样数据</div>';
   const t0 = Math.min(...valid.map(p => p.t)), t1 = Math.max(...valid.map(p => p.t));
   const x = t => 42 + (t - t0) / Math.max(1, t1 - t0) * 704;
-  const y = value => 140 - value * 1.1;
-  return `<div class="chart-wrap"><svg class="chart" viewBox="0 0 760 166" role="img" aria-label="NPU 算力占用趋势">
-    ${[0, 50, 100].map(v => `<line x1="42" x2="746" y1="${y(v)}" y2="${y(v)}" class="grid-line"/><text x="0" y="${y(v) + 4}" class="axis-label">${v}%</text>`).join('')}
+  const finiteValues = valid.map(p => p.y);
+  const max = definition.max || Math.max(1, Math.ceil(Math.max(...finiteValues) / 10) * 10);
+  const min = definition.max ? 0 : Math.max(0, Math.floor(Math.min(...finiteValues) / 10) * 10);
+  const y = value => 140 - (value - min) / Math.max(1, max - min) * 110;
+  const ticks = definition.max ? [0, 50, 100] : [min, min + (max - min) / 2, max];
+  const timeTicks = Array.from({ length: 5 }, (_, i) => t0 + (t1 - t0) * i / 4);
+  return `<div class="chart-wrap"><svg class="chart" viewBox="0 0 760 166" role="img" aria-label="NPU ${definition.label}趋势">
+    ${ticks.map(v => `<line x1="42" x2="746" y1="${y(v)}" y2="${y(v)}" class="grid-line"/><text x="0" y="${y(v) + 4}" class="axis-label">${num(v)}${definition.unit}</text>`).join('')}
     ${all.map(series => `<path d="${series.data.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p.y).toFixed(1)}`).join(' ')}" fill="none" stroke="${series.color}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>`).join('')}
-  </svg><div class="chart-times"><span>${formatTime(t0)}</span><span>${formatTime(t1)}</span></div></div>
+  </svg><div class="chart-times">${timeTicks.map(t => `<span class="time-tick">${formatTime(t)}</span>`).join('')}</div></div>
   <div class="legend">${all.map(s => `<span><i style="background:${s.color}"></i>NPU ${escapeHtml(s.id)}</span>`).join('')}</div>`;
 }
-function deviceCard(device, samples, index) {
-  const color = ['#159788', '#dd714f', '#4384c5', '#d0a044', '#876ab1', '#56a2a6'][index % 6];
-  const util = Number.isFinite(device.utilization) ? Math.max(0, Math.min(100, device.utilization)) : 0;
+function deviceCard(device, index) {
+  const color = seriesColors[index % seriesColors.length];
   const memory = device.hbm_total_mb > 0 ? device.hbm_used_mb / device.hbm_total_mb * 100 : null;
+  const hbm = Number.isFinite(memory) ? Math.max(0, Math.min(100, memory)) : 0;
   return `<div class="device-card"><div class="device-top"><span class="device-id"><span class="device-dot" style="background:${color}"></span>NPU ${escapeHtml(device.id)}</span><span class="health ${device.health === 'OK' ? 'ok' : 'warn'}">${escapeHtml(device.health || '未知')}</span></div>
-    <div class="device-model">${escapeHtml(device.model || 'Ascend NPU')}</div><div class="device-main"><div><span class="metric-label">AI Core</span><div class="device-value">${pct(device.utilization)}</div></div>${sparkline(points(samples, device.id), color)}</div>
-    <div class="usage"><span style="width:${util}%;background:${color}"></span></div>
-    <div class="device-bottom"><div>${icon('MemoryStick', 15)}<span>HBM</span><strong>${pct(memory)}</strong></div><div>${icon('Thermometer', 15)}<span>温度</span><strong>${Number.isFinite(device.temperature_c) ? `${num(device.temperature_c)}°C` : '--'}</strong></div><div>${icon('Zap', 15)}<span>功耗</span><strong>${Number.isFinite(device.power_w) ? `${num(device.power_w)} W` : '--'}</strong></div></div>
+    <div class="device-model">${escapeHtml(device.model || 'Ascend NPU')}</div><div class="device-main"><div><span class="metric-label">HBM 使用率</span><div class="device-value">${pct(memory)}</div></div></div>
+    <div class="usage"><span style="width:${hbm}%;background:${color}"></span></div>
   </div>`;
 }
 function renderServer(item) {
   const { server, response, sample, error } = item;
   const devices = sample?.devices || [];
   const samples = response?.samples || [];
+  const metric = server.chartMetric || 'hbm';
+  const definition = chartMetrics[metric] || chartMetrics.hbm;
   const stale = sample && Date.now() - Date.parse(sample.timestamp) > Math.max(90, response.interval_seconds * 3) * 1000;
   const state = error ? 'error' : stale ? 'warn' : sample ? 'online' : 'pending';
   const stateText = error ? '连接失败' : stale ? '数据延迟' : sample ? '运行中' : '等待采样';
   return `<section class="server-section"><div class="section-head"><div class="section-heading"><span class="server-symbol">${icon('Server', 19)}</span><div><div class="server-title"><h2>${escapeHtml(server.name)}</h2><span class="status ${state}"><i></i>${stateText}</span></div><p>${escapeHtml(server.mode === 'ssh' ? `SSH ${server.host}:${server.port}` : server.endpoint.replace(/^https?:\/\//, ''))}${sample ? ` <span>· 更新于 ${age(sample.timestamp)}</span>` : ''}</p></div></div><div class="section-tools">${button(icon('RefreshCw', 17), `refresh:${server.id}`, `class="icon-btn" title="刷新 ${escapeHtml(server.name)}" aria-label="刷新 ${escapeHtml(server.name)}"`)}${button(icon('Trash2', 17), `remove:${server.id}`, `class="icon-btn" title="移除 ${escapeHtml(server.name)}" aria-label="移除 ${escapeHtml(server.name)}"`)}</div></div>
     ${error ? `<div class="error-line">${icon('CircleAlert', 17)}<span>${escapeHtml(error)}</span>${server.mode === 'ssh' ? button('重新登录', `token:${server.id}`, 'class="text-button"') : !tokens[server.id] ? button('设置令牌', `token:${server.id}`, 'class="text-button"') : ''}</div>` : ''}
-    ${devices.length ? `<div class="device-grid">${devices.map((d, i) => deviceCard(d, samples, i)).join('')}</div><div class="trend-head"><div><h3>算力占用趋势</h3><span>AI Core 使用率</span></div><span>${samples.length} 个采样点</span></div>${timeline(samples, devices)}` : !error ? '<div class="server-pending">等待采集端返回 NPU 数据</div>' : ''}
+    ${devices.length ? `<div class="device-grid">${devices.map((d, i) => deviceCard(d, i)).join('')}</div><div class="trend-head"><div><h3>${definition.label}趋势</h3><span>${definition.label}${definition.unit === '%' ? '使用率' : ''}</span></div><div class="trend-tools"><span>${samples.length} 个采样点</span><div class="chart-controls">${Object.entries(chartMetrics).map(([key, value]) => button(value.label, `metric:${server.id}:${key}`, `class="chart-metric ${metric === key ? 'selected' : ''}" aria-pressed="${metric === key}"`)).join('')}</div></div></div>${timeline(samples, devices, metric)}` : !error ? '<div class="server-pending">等待采集端返回 NPU 数据</div>' : ''}
   </section>`;
 }
+function renderServerHbmSummaries(items) {
+  const summaries = items.map(({ server, sample }) => {
+    const devices = sample?.devices || [];
+    const memory = devices.filter(d => Number.isFinite(d.hbm_used_mb) && Number.isFinite(d.hbm_total_mb) && d.hbm_total_mb > 0);
+    const used = memory.reduce((sum, d) => sum + d.hbm_used_mb, 0);
+    const total = memory.reduce((sum, d) => sum + d.hbm_total_mb, 0);
+    const ratio = total ? used / total * 100 : null;
+    return `<div class="server-summary"><div class="server-summary-head"><strong>${escapeHtml(server.name)}</strong><span>${memory.length}/${devices.length || 0} 个 NPU</span></div><div class="server-summary-value"><b>${pct(ratio)}</b><span>${total ? `${(used / 1024).toFixed(1)} / ${(total / 1024).toFixed(1)} GB` : '暂无 HBM 读数'}</span></div><div class="summary-bar"><span style="width:${Math.max(0, Math.min(100, ratio || 0))}%"></span></div></div>`;
+  });
+  return summaries.length ? `<div class="server-summaries"><div class="server-summaries-title">各服务器 HBM 汇总</div><div class="server-summary-grid">${summaries.join('')}</div></div>` : '';
+}
 function demoResults() {
-  const configs = [{ id: 'demo-1', name: '训练节点 A', endpoint: 'demo-a.local', count: 4 }, { id: 'demo-2', name: '推理节点 B', endpoint: 'demo-b.local', count: 2 }];
+  const configs = [
+    { id: 'demo-1', name: '训练节点 A', endpoint: 'demo-a.local', count: 4 },
+    { id: 'demo-2', name: '推理节点 B', endpoint: 'demo-b.local', count: 2 },
+    { id: 'demo-3', name: '评测节点 C', endpoint: 'demo-c.local', count: 4 },
+    { id: 'demo-4', name: '服务节点 D', endpoint: 'demo-d.local', count: 2 },
+  ];
   const step = settings.range <= 60 ? 30 : settings.range <= 360 ? 120 : 600;
   const count = settings.range * 60 / step;
   return configs.map((server, si) => {
@@ -165,7 +195,7 @@ function demoResults() {
       });
       return { timestamp, devices };
     });
-    return { server, response: { interval_seconds: step, samples }, sample: samples.at(-1) };
+    return { server: { ...server, chartMetric: demoCharts.get(server.id) || (si % 2 ? 'ai' : 'hbm') }, response: { interval_seconds: step, samples }, sample: samples.at(-1) };
   });
 }
 function renderDashboard() {
@@ -176,7 +206,7 @@ function renderDashboard() {
   const ranges = [[15, '15 分钟'], [30, '30 分钟'], [60, '1 小时'], [360, '6 小时'], [1440, '24 小时']];
   const polls = [[15, '15 秒'], [30, '30 秒'], [60, '1 分钟'], [120, '2 分钟']];
   document.querySelector('#dashboard').innerHTML = `${demo ? `<div class="demo-banner">${icon('Info', 17)}<strong>演示模式</strong><span>当前显示模拟数据</span>${button('退出演示', 'demo-off', 'class="text-button"')}</div>` : ''}
-    ${renderStats(items)}<div class="controls"><div class="control-group"><span class="control-label">时间范围</span><div class="segmented">${ranges.map(([v, label]) => button(label, `range:${v}`, `class="${settings.range === v ? 'selected' : ''}" aria-pressed="${settings.range === v}"`)).join('')}</div></div><div class="control-group right"><label class="control-label" for="poll">${icon('Clock3', 15)}页面刷新</label><select id="poll" aria-label="刷新间隔">${polls.map(([v, label]) => `<option value="${v}" ${settings.poll === v ? 'selected' : ''}>${label}</option>`).join('')}</select>${button(icon(paused ? 'Play' : 'Pause', 16), 'pause', `class="icon-btn pause-btn" title="${paused ? '继续自动刷新' : '暂停自动刷新'}" aria-label="${paused ? '继续自动刷新' : '暂停自动刷新'}"`)}</div></div>
+    ${renderStats(items)}${renderServerHbmSummaries(items)}<div class="controls"><div class="control-group"><span class="control-label">时间范围</span><div class="segmented">${ranges.map(([v, label]) => button(label, `range:${v}`, `class="${settings.range === v ? 'selected' : ''}" aria-pressed="${settings.range === v}"`)).join('')}</div></div><div class="control-group right"><label class="control-label" for="poll">${icon('Clock3', 15)}页面刷新</label><select id="poll" aria-label="刷新间隔">${polls.map(([v, label]) => `<option value="${v}" ${settings.poll === v ? 'selected' : ''}>${label}</option>`).join('')}</select>${button(icon(paused ? 'Play' : 'Pause', 16), 'pause', `class="icon-btn pause-btn" title="${paused ? '继续自动刷新' : '暂停自动刷新'}" aria-label="${paused ? '继续自动刷新' : '暂停自动刷新'}"`)}</div></div>
     ${items.length ? `<div class="servers">${items.map(renderServer).join('')}</div>` : `<div class="empty"><span class="empty-art">${icon('Server', 34)}</span><h2>尚未连接服务器</h2><p>添加服务器，开始查看 NPU 资源。</p><div>${button(`${icon('Plus', 17)}添加服务器`, 'open-add', 'class="btn primary"')}${button('查看演示', 'demo-on', 'class="btn secondary"')}</div></div>`}
     <footer><span>SERVER BOARD</span><span>历史数据仅保留在采样服务内存</span></footer>`;
   document.querySelector('#poll').addEventListener('change', event => { settings.poll = Number(event.target.value); save(); restartTimer(); renderDashboard(); });
@@ -192,8 +222,8 @@ function renderModal(serverId = null, requestedMode = null, probeResult = null, 
   const sshFields = `<label for="server-name">显示名称</label><input id="server-name" name="name" value="${value('name')}" placeholder="例如：训练节点 A" maxlength="60" required />
     <div class="field-row"><div><label for="ssh-host">服务器 IP / 主机名</label><input id="ssh-host" name="host" value="${value('host')}" placeholder="192.168.1.10" spellcheck="false" ${probeResult ? 'readonly' : ''} required /></div><div><label for="ssh-port">SSH 端口</label><input id="ssh-port" name="port" type="number" min="1" max="65535" value="${value('port', 22)}" ${probeResult ? 'readonly' : ''} required /></div></div>
     <label for="ssh-username">SSH 用户名</label><input id="ssh-username" name="username" value="${value('username')}" autocomplete="username" required />
-    <label for="gateway-endpoint">SSH 网关地址</label><input id="gateway-endpoint" name="gateway" value="${value('gateway', 'http://127.0.0.1:8766')}" spellcheck="false" ${probeResult ? 'readonly' : ''} required />
-    <label for="gateway-token">网关访问令牌</label><input id="gateway-token" name="token" type="password" value="${escapeHtml(initial.token ?? tokens[serverId] ?? '')}" autocomplete="off" required />
+    <label for="gateway-endpoint">SSH 网关地址</label><input id="gateway-endpoint" name="gateway" value="${value('gateway', localGateway?.gateway || 'http://127.0.0.1:8766')}" spellcheck="false" ${probeResult ? 'readonly' : ''} required />
+    <label for="gateway-token">网关访问令牌</label><input id="gateway-token" name="token" type="password" value="${escapeHtml(initial.token ?? tokens[serverId] ?? localGateway?.token ?? '')}" autocomplete="off" required />
     <label for="sample-interval">采样间隔</label><select id="sample-interval" name="interval"><option value="15" ${value('interval', 30) === '15' ? 'selected' : ''}>15 秒</option><option value="30" ${value('interval', 30) === '30' ? 'selected' : ''}>30 秒</option><option value="60" ${value('interval', 30) === '60' ? 'selected' : ''}>60 秒</option><option value="120" ${value('interval', 30) === '120' ? 'selected' : ''}>120 秒</option></select>
     ${probeResult ? `<div class="fingerprint"><span>服务器主机指纹 (${escapeHtml(probeResult.algorithm)})</span><code>${escapeHtml(probeResult.fingerprint)}</code></div><label class="confirm-fingerprint"><input type="checkbox" name="confirmed" required />我已核对并信任此服务器的主机指纹</label><label for="ssh-password">SSH 密码</label><input id="ssh-password" name="password" type="password" autocomplete="new-password" required /><small>密码只用于本次连接，不会保存到浏览器或仓库。</small>` : '<small>先读取并核对服务器主机指纹，再输入密码。</small>'}`;
   const agentFields = `${!isToken ? `<label for="server-name">显示名称</label><input id="server-name" name="name" placeholder="例如：训练节点 A" maxlength="60" required /><label for="server-endpoint">服务器 IP 或 HTTPS 地址</label><input id="server-endpoint" name="endpoint" placeholder="192.168.1.10 或 https://npu.example.com" spellcheck="false" required /><small>直接输入 IP 时默认连接 HTTPS 8765 端口。</small>` : `<p class="token-server">${escapeHtml(server.name)}</p>`}<label for="server-token">访问令牌</label><input id="server-token" name="token" type="password" placeholder="采集端配置的令牌" autocomplete="off" required /><small>令牌仅保留在当前浏览器标签页。</small>`;
@@ -303,6 +333,7 @@ function handleAction(action) {
   else if (action === 'demo-on' || action === 'demo-off') { demo = action === 'demo-on'; renderDashboard(); if (!demo) refreshAll(); }
   else if (action === 'pause') { paused = !paused; restartTimer(); renderDashboard(); }
   else if (action.startsWith('range:')) { settings.range = Number(action.split(':')[1]); save(); renderDashboard(); if (!demo) refreshAll(); }
+  else if (action.startsWith('metric:')) { const [, id, metric] = action.split(':'); if (chartMetrics[metric]) { const server = servers.find(s => s.id === id); if (server) { server.chartMetric = metric; save(); } else if (demo) demoCharts.set(id, metric); renderDashboard(); } }
   else if (action.startsWith('refresh:')) { const server = servers.find(s => s.id === action.slice(8)); if (server) refreshServer(server).then(renderDashboard); }
   else if (action.startsWith('token:')) renderModal(action.slice(6));
   else if (action.startsWith('mode:')) renderModal(null, action.slice(5));
@@ -319,3 +350,5 @@ setInterval(() => { const clock = document.querySelector('#clock'); if (clock) c
 renderDashboard();
 restartTimer();
 refreshAll();
+fetch('/server_board/local-config', { cache: 'no-store' }).then(response => response.ok ? response.json() : null)
+  .then(config => { if (config?.gateway && config?.token) localGateway = config; }).catch(() => {});
