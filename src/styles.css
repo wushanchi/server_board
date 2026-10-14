@@ -38,3 +38,39 @@
 .summary-bar span{display:block;height:100%;border-radius:inherit;background:#2a9b8d}
 @media(max-width:1050px){.servers{grid-template-columns:repeat(2,minmax(0,1fr))}.server-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:760px){.servers{grid-template-columns:1fr}.server-summary-grid{grid-template-columns:1fr}.server-section{padding:16px 13px}.trend-tools{align-items:flex-start;flex-direction:column}.chart-controls{width:100%}.chart-metric{flex:1}}
+
+/* Shared server inventory workspace. */
+.workspace-nav{width:calc(100% - 24px);color:inherit;text-align:left;cursor:pointer}
+.workspace-nav:not(.active):hover{background:#1c4649;color:#fff}
+.server-resource-list{display:grid;gap:10px;margin-top:18px}
+.resource-overview{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 18px;background:#eef6f4;border:1px solid #d8eae6;border-radius:6px;color:#315f5d}
+.resource-overview>div{display:flex;align-items:baseline;gap:12px}
+.resource-overview strong{font:800 15px DM Sans,Manrope,sans-serif;color:#1f6e68}
+.resource-overview span{font-size:10px;color:#789392}
+.resource-overview-hint{white-space:nowrap}
+.server-resource-card{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:17px 18px;background:#fff;border:1px solid #e1e9e8;border-radius:6px}
+.resource-card-main{display:flex;align-items:center;gap:12px;min-width:0}
+.resource-server-icon{display:grid;place-items:center;width:38px;height:38px;flex:none;border-radius:6px;color:#267c75;background:#e6f3f0}
+.resource-server-copy{min-width:0}
+.resource-server-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.resource-server-title h2{margin:0;color:#233c40;font-size:14px}
+.resource-server-copy p{margin:5px 0 3px;color:#607b7d;font:500 10px DM Sans,Manrope,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.resource-server-copy p span{margin-left:8px;color:#9aa9aa;font-family:Manrope,sans-serif}
+.resource-server-copy small{display:block;color:#99a8a8;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.resource-card-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:none}
+.resource-connect{height:32px;padding:0 11px;font-size:10px}
+.npu-state{display:inline-flex;align-items:center;gap:3px;color:#9aa9aa;font-size:9px;white-space:nowrap}
+.npu-state.selected{color:#198477}
+.server-resource-empty{min-height:310px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:#fff;border:1px dashed #d6e4e2;border-radius:6px;margin-top:18px}
+.server-resource-empty .empty-art{margin-bottom:16px}
+.server-resource-empty h2{margin:0 0 7px;font-size:16px}
+.server-resource-empty p{margin:0 0 18px;color:#91a1a2;font-size:11px}
+.npu-picker{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:14px;padding:12px 14px;background:#fff;border:1px solid #e3eaea;border-radius:6px}
+.npu-picker>div:first-child{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
+.npu-picker strong{font-size:11px;color:#557375}
+.npu-picker>div:first-child span{color:#9aa9a9;font-size:9px}
+.npu-picker-actions{display:flex;justify-content:flex-end;gap:5px;flex-wrap:wrap}
+.server-chip{display:inline-flex;align-items:center;gap:3px;border:1px solid #dbe7e5;background:#f8fbfa;border-radius:4px;color:#789291;padding:5px 7px;font-size:9px;font-weight:800}
+.server-chip.selected{border-color:#a3d5cc;background:#e5f4f0;color:#14796f}
+@media(max-width:900px){.server-resource-card{align-items:flex-start;flex-direction:column}.resource-card-actions{width:100%;justify-content:flex-start}.npu-picker{align-items:flex-start;flex-direction:column}.npu-picker>div:first-child{flex-direction:column;gap:3px}}
+@media(max-width:760px){.resource-overview{align-items:flex-start;flex-direction:column;gap:5px}.resource-overview>div{flex-direction:column;gap:3px}.resource-overview-hint{white-space:normal}.server-resource-card{padding:14px}.resource-card-actions{flex-wrap:wrap}.resource-card-actions .resource-connect{flex:1}.npu-picker-actions{justify-content:flex-start;width:100%}.server-chip{flex:1;justify-content:center}}

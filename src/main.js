@@ -16,7 +16,11 @@ const app = document.querySelector('#app');
 const readJson = (store, key, fallback) => {
   try { return JSON.parse(store.getItem(key)) ?? fallback; } catch { return fallback; }
 };
-let servers = readJson(localStorage, STORAGE, []);
+let servers = readJson(localStorage, STORAGE, []).map(server => ({
+  ...server,
+  npuEnabled: server.npuEnabled !== false,
+  connected: server.mode === 'ssh' ? false : server.connected !== false,
+}));
 let settings = { range: 30, poll: 30, ...readJson(localStorage, SETTINGS, {}) };
 let tokens = readJson(sessionStorage, TOKENS, {});
 let demo = false;
@@ -27,6 +31,7 @@ let modalOpen = false;
 let localGateway = null;
 const demoCharts = new Map();
 const results = new Map();
+let workspace = 'npu';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -89,17 +94,43 @@ function button(label, action, extra = '') {
   return `<button type="button" ${extra} data-action="${action}">${label}</button>`;
 }
 function header() {
+  const npuWorkspace = workspace === 'npu';
+  const title = npuWorkspace ? 'NPU 资源面板' : 'Server 资源';
+  const subtitle = npuWorkspace ? '跨服务器查看设备负载、显存和运行状态' : '集中管理服务器连接、状态和 NPU 监控范围';
+  const actions = npuWorkspace
+    ? `${button(`${icon('RefreshCw', 17)}<span>立即刷新</span>`, 'refresh', `class="btn secondary" ${loading ? 'disabled' : ''}`)}${button(`${icon('Plus', 18)}<span>添加服务器</span>`, 'open-add', 'class="btn primary"')}`
+    : button(`${icon('Plus', 18)}<span>添加服务器</span>`, 'open-add', 'class="btn primary"');
   return `<aside class="sidebar">
     <div class="brand"><span class="brand-mark">${icon('Activity', 21)}</span><span>SERVER<span class="brand-accent">BOARD</span><small>服务器监控工作台</small></span></div>
     <div class="nav-label">工作空间</div>
-    <div class="nav-item active">${icon('ChartNoAxesCombined', 18)}<span>NPU 资源</span><span class="nav-active-mark"></span></div>
+    ${button(`${icon('ChartNoAxesCombined', 18)}<span>NPU 资源</span><span class="nav-active-mark"></span>`, 'workspace:npu', `class="nav-item workspace-nav ${npuWorkspace ? 'active' : ''}" aria-current="${npuWorkspace ? 'page' : 'false'}"`)}
+    ${button(`${icon('Server', 18)}<span>Server 资源</span><span class="nav-active-mark"></span>`, 'workspace:servers', `class="nav-item workspace-nav ${npuWorkspace ? '' : 'active'}" aria-current="${npuWorkspace ? 'false' : 'page'}"`)}
     <div class="sidebar-bottom"><span class="side-orbit"></span><span>历史数据仅保留在采样服务内存</span></div>
   </aside>
   <main class="main">
-    <div class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong>NPU 资源</strong></div><div class="top-right"><span class="today" id="clock"></span><a href="https://github.com/wushanchi/server_board" target="_blank" rel="noopener" title="查看项目仓库">${icon('ExternalLink', 16)}<span>GitHub</span></a></div></div>
-    <div class="content"><div class="page-head"><div><div class="eyebrow">RESOURCE MONITORING <span></span> LIVE DASHBOARD</div><h1>NPU 资源面板</h1><p class="subtitle">跨服务器查看设备负载、显存和运行状态</p></div><div class="page-actions">${button(`${icon('RefreshCw', 17)}<span>立即刷新</span>`, 'refresh', `class="btn secondary" ${loading ? 'disabled' : ''}`)}${button(`${icon('Plus', 18)}<span>添加服务器</span>`, 'open-add', 'class="btn primary"')}</div></div>
+    <div class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong>${title}</strong></div><div class="top-right"><span class="today" id="clock"></span><a href="https://github.com/wushanchi/server_board" target="_blank" rel="noopener" title="查看项目仓库">${icon('ExternalLink', 16)}<span>GitHub</span></a></div></div>
+    <div class="content"><div class="page-head"><div><div class="eyebrow">${npuWorkspace ? 'RESOURCE MONITORING' : 'SERVER INVENTORY'} <span></span> ${npuWorkspace ? 'LIVE DASHBOARD' : 'CONNECTION CENTER'}</div><h1>${title}</h1><p class="subtitle">${subtitle}</p></div><div class="page-actions">${actions}</div></div>
     <div id="dashboard"></div></div>
   </main>`;
+}
+function npuServers() {
+  return servers.filter(server => server.npuEnabled !== false);
+}
+function serverStatus(server) {
+  const result = results.get(server.id);
+  if (server.mode === 'ssh') {
+    if (sshSessions.has(server.id)) return { tone: 'online', label: '已连接', detail: 'SSH 会话已建立' };
+    if (result?.error) return { tone: 'error', label: '连接失败', detail: result.error };
+    return { tone: 'pending', label: '未连接', detail: '需要登录后采集' };
+  }
+  if (result?.error) return { tone: 'error', label: '连接失败', detail: result.error };
+  if (server.connected === false) return { tone: 'pending', label: '已断开', detail: '点击连接开始采集' };
+  if (result?.response) return { tone: 'online', label: '已连接', detail: `最近采样 ${age(result.response.samples?.at(-1)?.timestamp || new Date().toISOString())}` };
+  return { tone: 'online', label: '已连接', detail: '等待首次采样' };
+}
+function renderNpuPicker(items) {
+  if (!servers.length) return '';
+  return `<div class="npu-picker"><div><strong>监控服务器</strong><span>选择要显示在 NPU 资源页的服务器</span></div><div class="npu-picker-actions">${servers.map(server => button(`${server.npuEnabled !== false ? icon('Check', 13) : icon('Plus', 13)}<span>${escapeHtml(server.name)}</span>`, `npu-toggle:${server.id}`, `class="server-chip ${server.npuEnabled !== false ? 'selected' : ''}" aria-pressed="${server.npuEnabled !== false}"`)).join('')}</div></div>`;
 }
 function renderStats(items) {
   const active = items.filter(x => x.sample && !x.error && Date.now() - Date.parse(x.sample.timestamp) <= Math.max(90, x.response.interval_seconds * 3) * 1000);
@@ -176,6 +207,22 @@ function renderServerHbmSummaries(items) {
   });
   return summaries.length ? `<div class="server-summaries"><div class="server-summaries-title">各服务器 HBM 汇总</div><div class="server-summary-grid">${summaries.join('')}</div></div>` : '';
 }
+function renderServerResources() {
+  const dashboard = document.querySelector('#dashboard');
+  if (!servers.length) {
+    dashboard.innerHTML = `<div class="server-resource-empty"><span class="empty-art">${icon('Server', 34)}</span><h2>尚未添加服务器</h2><p>添加服务器后，可在这里统一连接并选择 NPU 监控范围。</p>${button(`${icon('Plus', 17)}添加服务器`, 'open-add', 'class="btn primary"')}</div>`;
+    createIcons({ icons });
+    return;
+  }
+  dashboard.innerHTML = `<div class="resource-overview"><div><strong>${servers.length} 台服务器</strong><span>${npuServers().length} 台已加入 NPU 资源页</span></div><span class="resource-overview-hint">连接状态会同步到 NPU 资源</span></div><div class="server-resource-list">${servers.map(server => {
+    const status = serverStatus(server);
+    const connected = status.tone === 'online';
+    const typeLabel = server.mode === 'ssh' ? 'SSH 网关' : 'HTTPS 采集端';
+    const address = server.mode === 'ssh' ? `${server.host}:${server.port}` : server.endpoint.replace(/^https?:\/\//, '');
+    return `<article class="server-resource-card"><div class="resource-card-main"><span class="resource-server-icon">${icon('Server', 20)}</span><div class="resource-server-copy"><div class="resource-server-title"><h2>${escapeHtml(server.name)}</h2><span class="status ${status.tone}"><i></i>${status.label}</span></div><p>${escapeHtml(address)}<span>· ${typeLabel}</span></p><small>${escapeHtml(status.detail)}</small></div></div><div class="resource-card-actions"><span class="npu-state ${server.npuEnabled !== false ? 'selected' : ''}">${server.npuEnabled !== false ? icon('Check', 13) : icon('Plus', 13)}${server.npuEnabled !== false ? 'NPU 页面已选' : 'NPU 页面未选'}</span>${button(connected ? `${icon('X', 15)}<span>断开</span>` : `${icon('Check', 15)}<span>连接</span>`, `${connected ? 'disconnect' : 'connect'}:${server.id}`, `class="btn ${connected ? 'secondary' : 'primary'} resource-connect"`)}${button(server.npuEnabled !== false ? '移出 NPU' : '加入 NPU', `npu-toggle:${server.id}`, 'class="text-button"')}${button(icon('Trash2', 16), `remove:${server.id}`, `class="icon-btn" title="移除 ${escapeHtml(server.name)}" aria-label="移除 ${escapeHtml(server.name)}"`)}</div></article>`;
+  }).join('')}</div>`;
+  createIcons({ icons });
+}
 function demoResults() {
   const configs = [
     { id: 'demo-1', name: '训练节点 A', endpoint: 'demo-a.local', count: 4 },
@@ -199,17 +246,24 @@ function demoResults() {
   });
 }
 function renderDashboard() {
-  const items = demo ? demoResults() : servers.map(server => {
+  const visibleServers = npuServers();
+  const items = demo ? demoResults() : visibleServers.map(server => {
     const result = results.get(server.id) || {};
     return { server, ...result, sample: result.response?.samples?.at(-1) };
   });
   const ranges = [[15, '15 分钟'], [30, '30 分钟'], [60, '1 小时'], [360, '6 小时'], [1440, '24 小时']];
   const polls = [[15, '15 秒'], [30, '30 秒'], [60, '1 分钟'], [120, '2 分钟']];
   document.querySelector('#dashboard').innerHTML = `${demo ? `<div class="demo-banner">${icon('Info', 17)}<strong>演示模式</strong><span>当前显示模拟数据</span>${button('退出演示', 'demo-off', 'class="text-button"')}</div>` : ''}
-    ${renderStats(items)}${renderServerHbmSummaries(items)}<div class="controls"><div class="control-group"><span class="control-label">时间范围</span><div class="segmented">${ranges.map(([v, label]) => button(label, `range:${v}`, `class="${settings.range === v ? 'selected' : ''}" aria-pressed="${settings.range === v}"`)).join('')}</div></div><div class="control-group right"><label class="control-label" for="poll">${icon('Clock3', 15)}页面刷新</label><select id="poll" aria-label="刷新间隔">${polls.map(([v, label]) => `<option value="${v}" ${settings.poll === v ? 'selected' : ''}>${label}</option>`).join('')}</select>${button(icon(paused ? 'Play' : 'Pause', 16), 'pause', `class="icon-btn pause-btn" title="${paused ? '继续自动刷新' : '暂停自动刷新'}" aria-label="${paused ? '继续自动刷新' : '暂停自动刷新'}"`)}</div></div>
+    ${renderStats(items)}${renderNpuPicker(items)}${renderServerHbmSummaries(items)}<div class="controls"><div class="control-group"><span class="control-label">时间范围</span><div class="segmented">${ranges.map(([v, label]) => button(label, `range:${v}`, `class="${settings.range === v ? 'selected' : ''}" aria-pressed="${settings.range === v}"`)).join('')}</div></div><div class="control-group right"><label class="control-label" for="poll">${icon('Clock3', 15)}页面刷新</label><select id="poll" aria-label="刷新间隔">${polls.map(([v, label]) => `<option value="${v}" ${settings.poll === v ? 'selected' : ''}>${label}</option>`).join('')}</select>${button(icon(paused ? 'Play' : 'Pause', 16), 'pause', `class="icon-btn pause-btn" title="${paused ? '继续自动刷新' : '暂停自动刷新'}" aria-label="${paused ? '继续自动刷新' : '暂停自动刷新'}"`)}</div></div>
     ${items.length ? `<div class="servers">${items.map(renderServer).join('')}</div>` : `<div class="empty"><span class="empty-art">${icon('Server', 34)}</span><h2>尚未连接服务器</h2><p>添加服务器，开始查看 NPU 资源。</p><div>${button(`${icon('Plus', 17)}添加服务器`, 'open-add', 'class="btn primary"')}${button('查看演示', 'demo-on', 'class="btn secondary"')}</div></div>`}
     <footer><span>SERVER BOARD</span><span>历史数据仅保留在采样服务内存</span></footer>`;
-  document.querySelector('#poll').addEventListener('change', event => { settings.poll = Number(event.target.value); save(); restartTimer(); renderDashboard(); });
+  document.querySelector('#poll')?.addEventListener('change', event => { settings.poll = Number(event.target.value); save(); restartTimer(); renderDashboard(); });
+  createIcons({ icons });
+}
+function renderWorkspace() {
+  app.innerHTML = header();
+  if (workspace === 'servers') renderServerResources();
+  else renderDashboard();
   createIcons({ icons });
 }
 function renderModal(serverId = null, requestedMode = null, probeResult = null, initial = {}) {
@@ -266,19 +320,19 @@ function renderModal(serverId = null, requestedMode = null, probeResult = null, 
         });
         const id = serverId || crypto.randomUUID();
         if (serverId && sshSessions.has(id)) closeSSHSession(server);
-        const config = { id, mode: 'ssh', name: String(data.get('name')).trim(), host, port, username: String(data.get('username')).trim(), gateway, interval: Number(data.get('interval')) };
+        const config = { id, mode: 'ssh', name: String(data.get('name')).trim(), host, port, username: String(data.get('username')).trim(), gateway, interval: Number(data.get('interval')), npuEnabled: server?.npuEnabled !== false, connected: true };
         if (server) Object.assign(server, config); else servers.push(config);
         tokens[id] = token;
         sshSessions.set(id, response.session_id);
-      } else if (isToken) tokens[server.id] = String(data.get('token')).trim();
+      } else if (isToken) { tokens[server.id] = String(data.get('token')).trim(); server.connected = true; }
       else {
         const endpoint = normalizeEndpoint(String(data.get('endpoint')));
         if (servers.some(s => s.endpoint === endpoint)) throw new Error('这台服务器已经添加');
         const id = crypto.randomUUID();
-        servers.push({ id, name: String(data.get('name')).trim(), endpoint });
+        servers.push({ id, name: String(data.get('name')).trim(), endpoint, mode: 'agent', npuEnabled: true, connected: true });
         tokens[id] = String(data.get('token')).trim();
       }
-      save(); closeModal(); renderDashboard(); refreshAll();
+      save(); closeModal(); renderWorkspace(); refreshAll();
     } catch (error) { showError(error); submit.disabled = false; }
   });
   form.querySelector('input')?.focus();
@@ -292,6 +346,10 @@ function closeSSHSession(server) {
 }
 async function refreshServer(server) {
   const token = tokens[server.id];
+  if (server.mode !== 'ssh' && server.connected === false) {
+    results.delete(server.id);
+    return;
+  }
   if (server.mode === 'ssh' && !sshSessions.has(server.id)) {
     results.set(server.id, { error: 'SSH 会话未连接，请重新登录。' }); return;
   }
@@ -309,18 +367,21 @@ async function refreshServer(server) {
       data = await response.json();
     }
     if (!Array.isArray(data.samples)) throw new Error('采集端返回了无效数据');
+    server.connected = true;
     results.set(server.id, { response: data, error: data.last_error ? `采集失败：${data.last_error}` : null });
   } catch (error) {
     if (server.mode === 'ssh' && error.message.includes('reconnect required')) sshSessions.delete(server.id);
+    server.connected = false;
     results.set(server.id, { ...results.get(server.id), error: error.name === 'AbortError' ? '连接超时，请检查地址和网络' : error instanceof TypeError ? '无法连接。请检查 HTTPS 证书、CORS 和服务器网络。' : error.message });
   } finally { clearTimeout(timeout); }
 }
 async function refreshAll() {
   if (loading || demo || !servers.length) return;
   loading = true;
-  await Promise.all(servers.map(refreshServer));
+  const targets = npuServers().filter(server => server.mode === 'ssh' ? sshSessions.has(server.id) : server.connected !== false);
+  await Promise.all(targets.map(refreshServer));
   loading = false;
-  renderDashboard();
+  renderWorkspace();
 }
 function restartTimer() {
   clearInterval(timer);
@@ -334,12 +395,16 @@ function handleAction(action) {
   else if (action === 'pause') { paused = !paused; restartTimer(); renderDashboard(); }
   else if (action.startsWith('range:')) { settings.range = Number(action.split(':')[1]); save(); renderDashboard(); if (!demo) refreshAll(); }
   else if (action.startsWith('metric:')) { const [, id, metric] = action.split(':'); if (chartMetrics[metric]) { const server = servers.find(s => s.id === id); if (server) { server.chartMetric = metric; save(); } else if (demo) demoCharts.set(id, metric); renderDashboard(); } }
-  else if (action.startsWith('refresh:')) { const server = servers.find(s => s.id === action.slice(8)); if (server) refreshServer(server).then(renderDashboard); }
+  else if (action.startsWith('refresh:')) { const server = servers.find(s => s.id === action.slice(8)); if (server) refreshServer(server).then(renderWorkspace); }
   else if (action.startsWith('token:')) renderModal(action.slice(6));
   else if (action.startsWith('mode:')) renderModal(null, action.slice(5));
-  else if (action.startsWith('remove:')) { const id = action.slice(7); const server = servers.find(s => s.id === id); if (server?.mode === 'ssh') closeSSHSession(server); servers = servers.filter(s => s.id !== id); delete tokens[id]; results.delete(id); save(); renderDashboard(); }
+  else if (action.startsWith('workspace:')) { workspace = action.slice(10) === 'servers' ? 'servers' : 'npu'; renderWorkspace(); }
+  else if (action.startsWith('npu-toggle:')) { const server = servers.find(s => s.id === action.slice(11)); if (server) { server.npuEnabled = server.npuEnabled === false; save(); renderWorkspace(); } }
+  else if (action.startsWith('connect:')) { const server = servers.find(s => s.id === action.slice(8)); if (server?.mode === 'ssh') renderModal(server.id, 'ssh'); else if (server) { if (!tokens[server.id]) renderModal(server.id); else { server.connected = true; save(); refreshServer(server).then(renderWorkspace); } } }
+  else if (action.startsWith('disconnect:')) { const server = servers.find(s => s.id === action.slice(11)); if (server) { if (server.mode === 'ssh') closeSSHSession(server); server.connected = false; results.delete(server.id); save(); renderWorkspace(); } }
+  else if (action.startsWith('remove:')) { const id = action.slice(7); const server = servers.find(s => s.id === id); if (server?.mode === 'ssh') closeSSHSession(server); servers = servers.filter(s => s.id !== id); delete tokens[id]; results.delete(id); save(); renderWorkspace(); }
 }
-app.innerHTML = header();
+renderWorkspace();
 document.addEventListener('click', event => {
   if (modalOpen && event.target.id === 'modal') closeModal();
   const target = event.target.closest('[data-action]');
@@ -347,7 +412,6 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && modalOpen) closeModal(); });
 setInterval(() => { const clock = document.querySelector('#clock'); if (clock) clock.textContent = new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit', minute: '2-digit' }); }, 1000);
-renderDashboard();
 restartTimer();
 refreshAll();
 fetch('/server_board/local-config', { cache: 'no-store' }).then(response => response.ok ? response.json() : null)
